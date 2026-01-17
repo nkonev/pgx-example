@@ -14,6 +14,7 @@ import (
 	pgxSlog "github.com/mcosta74/pgx-slog"
 	jaegerPropagator "go.opentelemetry.io/contrib/propagators/jaeger"
 
+	"github.com/jackc/pgx/v5/multitracer"
 	"github.com/sanity-io/litter"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -52,24 +53,19 @@ func New(ctx context.Context, dsn string, provider trace.TracerProvider, slogger
 	// FYI: NewLoggerAdapter: https://github.com/mcosta74/pgx-slog
 	adapterLogger := pgxSlog.NewLogger(slogger)
 
-	// https://github.com/jackc/pgx/discussions/1677#discussioncomment-8815982
-	m := MultiQueryTracer{
-		Tracers: []pgx.QueryTracer{
-			// tracer: https://github.com/exaring/otelpgx
-			otelpgx.NewTracer(otelpgx.WithTracerProvider(provider)),
-
-			// logger
-			&tracelog.TraceLog{
-				Logger:   adapterLogger,
-				LogLevel: tracelog.LogLevelTrace,
-				Config: &tracelog.TraceLogConfig{
-					TimeKey: "duration",
-				},
+	// https://github.com/jackc/pgx/discussions/1677#discussioncomment-12253699
+	m := multitracer.New(
+		otelpgx.NewTracer(otelpgx.WithTracerProvider(provider)),
+		&tracelog.TraceLog{
+			Logger:   adapterLogger,
+			LogLevel: tracelog.LogLevelTrace,
+			Config: &tracelog.TraceLogConfig{
+				TimeKey: "duration",
 			},
 		},
-	}
+	)
 
-	config.ConnConfig.Tracer = &m
+	config.ConnConfig.Tracer = m
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
