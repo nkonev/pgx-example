@@ -8,7 +8,6 @@ import (
 
 	"github.com/exaring/otelpgx"
 	"github.com/georgysavva/scany/v2/pgxscan"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/tracelog"
 	pgxSlog "github.com/mcosta74/pgx-slog"
@@ -25,24 +24,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
-
-type MultiQueryTracer struct {
-	Tracers []pgx.QueryTracer
-}
-
-func (m *MultiQueryTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	for _, t := range m.Tracers {
-		ctx = t.TraceQueryStart(ctx, conn, data)
-	}
-
-	return ctx
-}
-
-func (m *MultiQueryTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
-	for _, t := range m.Tracers {
-		t.TraceQueryEnd(ctx, conn, data)
-	}
-}
 
 func New(ctx context.Context, dsn string, provider trace.TracerProvider, slogger *slog.Logger) *pgxpool.Pool {
 	config, err := pgxpool.ParseConfig(dsn)
