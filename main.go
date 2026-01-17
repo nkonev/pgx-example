@@ -43,7 +43,7 @@ func (m *MultiQueryTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, da
 	}
 }
 
-func New(ctx context.Context, dsn string, slogger *slog.Logger) *pgxpool.Pool {
+func New(ctx context.Context, dsn string, provider trace.TracerProvider, slogger *slog.Logger) *pgxpool.Pool {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		panic(err)
@@ -56,12 +56,15 @@ func New(ctx context.Context, dsn string, slogger *slog.Logger) *pgxpool.Pool {
 	m := MultiQueryTracer{
 		Tracers: []pgx.QueryTracer{
 			// tracer: https://github.com/exaring/otelpgx
-			otelpgx.NewTracer(),
+			otelpgx.NewTracer(otelpgx.WithTracerProvider(provider)),
 
 			// logger
 			&tracelog.TraceLog{
 				Logger:   adapterLogger,
 				LogLevel: tracelog.LogLevelTrace,
+				Config: &tracelog.TraceLogConfig{
+					TimeKey: "duration",
+				},
 			},
 		},
 	}
@@ -104,7 +107,9 @@ func (h *TracingContextHandler) Handle(ctx context.Context, r slog.Record) error
 func main() {
 	ctx := context.Background()
 
-	h := &TracingContextHandler{slog.NewTextHandler(os.Stdout, nil)}
+	h := &TracingContextHandler{slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})}
 	sl := slog.New(h)
 
 	traceExporterConn, err := grpc.DialContext(context.Background(), "localhost:44317", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
@@ -139,7 +144,7 @@ func main() {
 
 	sl.InfoContext(ctx, "Helloe")
 
-	pool := New(ctx, "postgres://postgres:postgresqlPassword@localhost:35444/postgres?sslmode=disable&application_name=pgx-trace-app", sl)
+	pool := New(ctx, "postgres://postgres:postgresqlPassword@localhost:35444/postgres?sslmode=disable&application_name=pgx-trace-app", tp, sl)
 	defer pool.Close()
 
 	type Dto struct {
