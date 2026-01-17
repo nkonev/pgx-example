@@ -3,32 +3,157 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
+	"github.com/exaring/otelpgx"
+	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgxutil"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/tracelog"
+	pgxSlog "github.com/mcosta74/pgx-slog"
+	jaegerPropagator "go.opentelemetry.io/contrib/propagators/jaeger"
+
 	"github.com/sanity-io/litter"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
-func main() {
-	// urlExample := "postgres://username:password@localhost:5432/database_name"
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, "postgres://postgres:postgresqlPassword@localhost:5432/chat?sslmode=disable&application_name=cqrs-app")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
-		os.Exit(1)
+type MultiQueryTracer struct {
+	Tracers []pgx.QueryTracer
+}
+
+func (m *MultiQueryTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	for _, t := range m.Tracers {
+		ctx = t.TraceQueryStart(ctx, conn, data)
 	}
-	defer conn.Close(ctx)
+
+	return ctx
+}
+
+func (m *MultiQueryTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	for _, t := range m.Tracers {
+		t.TraceQueryEnd(ctx, conn, data)
+	}
+}
+
+func New(ctx context.Context, dsn string, slogger *slog.Logger) *pgxpool.Pool {
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		panic(err)
+	}
+
+	// FYI: NewLoggerAdapter: https://github.com/mcosta74/pgx-slog
+	adapterLogger := pgxSlog.NewLogger(slogger)
+
+	// https://github.com/jackc/pgx/discussions/1677#discussioncomment-8815982
+	m := MultiQueryTracer{
+		Tracers: []pgx.QueryTracer{
+			// tracer: https://github.com/exaring/otelpgx
+			otelpgx.NewTracer(),
+
+			// logger
+			&tracelog.TraceLog{
+				Logger:   adapterLogger,
+				LogLevel: tracelog.LogLevelTrace,
+			},
+		},
+	}
+
+	config.ConnConfig.Tracer = &m
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		panic(err)
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		panic(err)
+	}
+
+	return pool
+}
+
+const LogFieldTraceId = "trace_id"
+
+func GetTraceId(ctx context.Context) string {
+	sc := trace.SpanFromContext(ctx).SpanContext()
+	tr := sc.TraceID()
+	return tr.String()
+}
+
+type TracingContextHandler struct {
+	slog.Handler
+}
+
+func (h *TracingContextHandler) Handle(ctx context.Context, r slog.Record) error {
+	traceId := GetTraceId(ctx)
+	if traceId != "" {
+		r.AddAttrs(slog.String(LogFieldTraceId, traceId))
+	}
+
+	return h.Handler.Handle(ctx, r)
+}
+
+func main() {
+	ctx := context.Background()
+
+	h := &TracingContextHandler{slog.NewTextHandler(os.Stdout, nil)}
+	sl := slog.New(h)
+
+	traceExporterConn, err := grpc.DialContext(context.Background(), "localhost:44317", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	if err != nil {
+		panic(err)
+	}
+	exporter, err := otlptracegrpc.New(context.Background(), otlptracegrpc.WithGRPCConn(traceExporterConn))
+
+	defer exporter.Shutdown(ctx)
+	defer traceExporterConn.Close()
+
+	resources := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String("my-app"),
+	)
+	batchSpanProcessor := sdktrace.NewBatchSpanProcessor(exporter)
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(batchSpanProcessor),
+		sdktrace.WithResource(resources),
+	)
+	otel.SetTracerProvider(tp)
+
+	// register jaeger propagator
+	otel.SetTextMapPropagator(jaegerPropagator.Jaeger{})
+
+	defer tp.Shutdown(context.Background())
+
+	tr := tp.Tracer("my.tracer")
+	ctx, span := tr.Start(ctx, "my.span")
+	defer span.End()
+
+	sl.InfoContext(ctx, "Helloe")
+
+	pool := New(ctx, "postgres://postgres:postgresqlPassword@localhost:35444/postgres?sslmode=disable&application_name=pgx-trace-app", sl)
+	defer pool.Close()
 
 	type Dto struct {
 		Ide    int64  `db:"id"`
 		Titled string `db:"title"`
 	}
 
-	mapped2, err := pgxutil.Select(ctx, conn, "select id, title from chat_common where id=$1", []any{1}, pgx.RowToStructByName[Dto])
+	dts := []Dto{}
+
+	err = pgxscan.Select(ctx, pool, &dts, "select id, title from chat_common where id=$1 or id=$2", 1, 2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Mapping failed: %v\n", err)
 		os.Exit(1)
 	}
-	litter.Dump(mapped2)
+	fmt.Println("Results:")
+	litter.Dump(dts)
 }
