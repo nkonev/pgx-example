@@ -89,11 +89,11 @@ func main() {
 	})}
 	sl := slog.New(h)
 
-	traceExporterConn, err := grpc.DialContext(context.Background(), "localhost:44317", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	traceExporterConn, err := grpc.DialContext(ctx, "localhost:44317", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	if err != nil {
 		panic(err)
 	}
-	exporter, err := otlptracegrpc.New(context.Background(), otlptracegrpc.WithGRPCConn(traceExporterConn))
+	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(traceExporterConn))
 
 	defer exporter.Shutdown(ctx)
 	defer traceExporterConn.Close()
@@ -113,7 +113,7 @@ func main() {
 	// register jaeger propagator
 	otel.SetTextMapPropagator(jaegerPropagator.Jaeger{})
 
-	defer tp.Shutdown(context.Background())
+	defer tp.Shutdown(ctx)
 
 	tr := tp.Tracer("my.tracer")
 	ctx, span := tr.Start(ctx, "my.span")
@@ -136,6 +136,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Mapping failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("Results:")
+	sl.InfoContext(ctx, "Results:")
 	litter.Dump(dts)
 }
