@@ -8,7 +8,9 @@ import (
 
 	"github.com/exaring/otelpgx"
 	"github.com/georgysavva/scany/v2/pgxscan"
+	"github.com/georgysavva/scany/v2/sqlscan"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jackc/pgx/v5/tracelog"
 	pgxSlog "github.com/mcosta74/pgx-slog"
 	jaegerPropagator "go.opentelemetry.io/contrib/propagators/jaeger"
@@ -138,4 +140,17 @@ func main() {
 	}
 	sl.InfoContext(ctx, "Results:")
 	litter.Dump(dts)
+
+	// compatibility level
+	stdDb := stdlib.OpenDBFromPool(pool)
+
+	dtsComp := []Dto{}
+	err = sqlscan.Select(ctx, stdDb, &dtsComp, "select title, id from chat_common where id = $1", 3)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Mapping failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	sl.InfoContext(ctx, "ResultsComp:")
+	litter.Dump(dtsComp)
 }
