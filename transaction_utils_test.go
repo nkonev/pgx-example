@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 )
@@ -54,6 +55,7 @@ func RecreateDb(q Querier) {
 		drop table if exists t1;
 		drop table if exists t2;
 		drop table if exists tr1;
+		drop table if exists tr11;
 		drop table if exists tr2;
 	`)
 	lgr.Warn("Recreating database")
@@ -130,6 +132,33 @@ func TestTransactionWithResultPositive(t *testing.T) {
 	row := dbInstance.QueryRow(ctx, "SELECT a FROM tr1 WHERE id = $1", id)
 	var a string
 	err = row.Scan(&a)
+	assert.Nil(t, err)
+	assert.Equal(t, "lorem", a)
+}
+
+func TestTransactionWithResultPositivePgxscan(t *testing.T) {
+	ctx := context.Background()
+
+	id, err := TransactWithResult(ctx, dbInstance, func(tx Querier) (int64, error) {
+		if _, err := tx.Exec(ctx, "CREATE TABLE tr11(id BIGSERIAL PRIMARY KEY, a text UNIQUE)"); err != nil {
+			return 0, err
+		}
+
+		var id int64
+		err := pgxscan.Get(ctx, tx, &id, `INSERT INTO tr11(a) VALUES ('lorem') RETURNING id`)
+		if err != nil {
+			lgr.Error(fmt.Sprintf("Error during getting chat id %v", err))
+			return 0, err
+		}
+
+		return id, nil
+	})
+	assert.Nil(t, err)
+
+	assert.True(t, id != 0)
+
+	var a string
+	err = pgxscan.Get(ctx, dbInstance, &a, "SELECT a FROM tr11 WHERE id = $1", id)
 	assert.Nil(t, err)
 	assert.Equal(t, "lorem", a)
 }
