@@ -133,6 +133,8 @@ func main() {
 
 	dts := []Dto{}
 
+	// pool.Exec()
+
 	err = pgxscan.Select(ctx, pool, &dts, "select id, title from chat_common where id=$1 or id=$2", 1, 2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Mapping failed: %v\n", err)
